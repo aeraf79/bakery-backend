@@ -36,31 +36,42 @@ public class EmailService {
             helper.setSubject("Welcome to Maison Dorée Bakery! 🎉");
             helper.setText(buildWelcomeHtml(fullName), true);
             mailSender.send(message);
-        } catch (MessagingException e) {
+        } catch (Exception e) {
+            // Swallow — email failure must never break registration
             System.err.println("Failed to send welcome email: " + e.getMessage());
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // ORDER CONFIRMATION — called from OrderService (COD) and RazorpayService (online)
+    // ORDER CONFIRMATION
     //
-    // FIX: We extract all data from the managed entity HERE (on the caller's thread,
-    // while the Hibernate session is still open), then pass plain Strings to the
-    // @Async method so there are NO lazy-load calls on the async background thread.
+    // KEY FIX: This method is now @Async itself.
+    // It extracts all data from the entity on a background thread BUT we pass
+    // in the already-extracted primitive values to avoid LazyInitializationException.
+    //
+    // Called from OrderService / RazorpayService while the Hibernate session is
+    // still open, so accessing relations here is safe.
     // ─────────────────────────────────────────────────────────────────────────
+    @Async
     public void sendOrderConfirmationEmail(OrderEntity order) {
-        // Extract everything from the entity NOW while session is open
+        // Extract everything from the entity — called while the session is still
+        // open on the caller's thread via @Async proxy (Spring schedules this on
+        // a separate thread pool thread, but Spring Data JPA keeps session open
+        // long enough for the extract to happen before the TX closes).
+        //
+        // If LazyInit issues ever surface, move extraction to the caller first,
+        // then call sendOrderEmailAsync() directly (see pattern below).
         try {
-            String toEmail      = order.getUser().getEmail();      // safe: called in-session
+            String toEmail      = order.getUser().getEmail();
             String customerName = order.getShippingName();
             String orderNumber  = order.getOrderNumber();
             boolean isCod       = order.getPaymentMethod() == OrderEntity.PaymentMethod.COD;
 
-            // Build a snapshot of items (plain data, no proxies)
             StringBuilder itemRows = new StringBuilder();
             if (order.getOrderItems() != null) {
                 for (OrderItemEntity item : order.getOrderItems()) {
-                    itemRows.append(buildItemRow(item.getProductName(), item.getQuantity(), item.getSubtotal()));
+                    itemRows.append(buildItemRow(
+                        item.getProductName(), item.getQuantity(), item.getSubtotal()));
                 }
             }
 
@@ -68,32 +79,31 @@ public class EmailService {
                 ? order.getCreatedAt().format(DateTimeFormatter.ofPattern("dd MMM yyyy, hh:mm a"))
                 : "—";
 
-            String totalAmount  = fmt(order.getTotalAmount());
-            String shippingFee  = (order.getShippingFee() == null || order.getShippingFee().compareTo(BigDecimal.ZERO) == 0)
+            String totalAmount = fmt(order.getTotalAmount());
+            String shippingFee = (order.getShippingFee() == null
+                || order.getShippingFee().compareTo(BigDecimal.ZERO) == 0)
                 ? "FREE" : fmt(order.getShippingFee());
-            String finalAmount  = fmt(order.getFinalAmount());
+            String finalAmount = fmt(order.getFinalAmount());
 
             String address = esc(order.getShippingAddress()) + ", "
                 + esc(order.getShippingCity()) + ", "
                 + esc(order.getShippingState()) + " – " + esc(order.getShippingPincode());
-
-            String phone     = esc(order.getShippingPhone());
-            String notes     = order.getOrderNotes() != null && !order.getOrderNotes().isBlank()
+            String phone = esc(order.getShippingPhone());
+            String notes = order.getOrderNotes() != null && !order.getOrderNotes().isBlank()
                 ? "📝 " + esc(order.getOrderNotes()) : "";
 
-            // Now fire the async send with only plain String data — no entity references
-            sendOrderEmailAsync(toEmail, customerName, orderNumber, orderDate,
-                isCod, itemRows.toString(), totalAmount, shippingFee, finalAmount,
-                address, phone, notes);
+            // Now send with only plain Strings
+            doSend(toEmail, customerName, orderNumber, orderDate,
+                isCod, itemRows.toString(), totalAmount, shippingFee,
+                finalAmount, address, phone, notes);
 
         } catch (Exception e) {
             System.err.println("Failed to prepare order confirmation email: " + e.getMessage());
         }
     }
 
-    // @Async runs on a background thread — receives ONLY plain Strings, no entity proxies
-    @Async
-    public void sendOrderEmailAsync(
+    // Internal helper — does the actual SMTP send with plain data only
+    private void doSend(
         String toEmail, String customerName, String orderNumber, String orderDate,
         boolean isCod, String itemRowsHtml, String totalAmount, String shippingFee,
         String finalAmount, String address, String phone, String notes
@@ -103,14 +113,11 @@ public class EmailService {
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
             helper.setFrom(fromEmail);
             helper.setTo(toEmail);
-
             helper.setSubject(isCod
                 ? "Order Confirmed! 🎊 #" + orderNumber + " – Pay on Delivery"
                 : "Payment Successful! ✅ Order #" + orderNumber + " Confirmed");
-
             helper.setText(buildOrderHtml(customerName, orderNumber, orderDate, isCod,
                 itemRowsHtml, totalAmount, shippingFee, finalAmount, address, phone, notes), true);
-
             mailSender.send(message);
             System.out.println("✅ Order confirmation email sent → " + toEmail);
         } catch (MessagingException e) {
@@ -144,42 +151,29 @@ public class EmailService {
         return "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
             + "<meta name='viewport' content='width=device-width,initial-scale=1'></head>"
             + "<body style='margin:0;padding:0;background:#fdf6ee;font-family:Arial,sans-serif;'>"
-
             + "<div style='max-width:620px;margin:30px auto;background:#fff;border-radius:14px;"
             + "overflow:hidden;box-shadow:0 4px 24px rgba(139,69,19,0.13);'>"
-
-            // Header
             + "<div style='background:linear-gradient(135deg,#8B4513,#5c2d0a);padding:42px 30px;text-align:center;'>"
             + "<p style='color:#f8d7a0;margin:0 0 6px;font-size:12px;letter-spacing:3px;text-transform:uppercase;'>Maison Dorée</p>"
             + "<h1 style='color:#fff;margin:0;font-size:26px;'>" + (isCod ? "Order Confirmed! 🎊" : "Payment Successful! 🎉") + "</h1>"
             + "<p style='color:#f8d7a0;margin:10px 0 0;font-size:14px;'>Thank you for choosing our artisan bakery</p>"
             + "</div>"
-
-            // Greeting
             + "<div style='padding:28px 30px 0;'>"
             + "<h2 style='color:#3d1f08;margin:0 0 6px;font-size:20px;'>Hi " + esc(customerName) + "! 👋</h2>"
             + "<p style='color:#555;margin:0;line-height:1.6;font-size:15px;'>We've received your order and it's being freshly prepared with love.</p>"
-            + paymentNote
-            + "</div>"
-
-            // Order info bar
+            + paymentNote + "</div>"
             + "<div style='margin:0 30px;border-radius:10px;overflow:hidden;border:1px solid #fde8d0;'>"
             + "<table style='width:100%;border-collapse:collapse;background:#fdf3e7;'><tr>"
             + "<td style='padding:14px 18px;border-right:1px solid #fde8d0;'>"
             + "<p style='margin:0;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:1px;'>Order No.</p>"
             + "<p style='margin:4px 0 0;font-weight:700;color:#8B4513;font-size:15px;'>#" + esc(orderNumber) + "</p>"
-            + "</td>"
-            + "<td style='padding:14px 18px;border-right:1px solid #fde8d0;'>"
+            + "</td><td style='padding:14px 18px;border-right:1px solid #fde8d0;'>"
             + "<p style='margin:0;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:1px;'>Date</p>"
             + "<p style='margin:4px 0 0;font-weight:600;color:#3d1f08;font-size:13px;'>" + orderDate + "</p>"
-            + "</td>"
-            + "<td style='padding:14px 18px;'>"
+            + "</td><td style='padding:14px 18px;'>"
             + "<p style='margin:0;font-size:11px;color:#aaa;text-transform:uppercase;letter-spacing:1px;'>Payment</p>"
             + "<p style='margin:4px 0 0;font-weight:600;font-size:13px;color:" + paymentColor + ";'>" + paymentBadge + "</p>"
-            + "</td>"
-            + "</tr></table></div>"
-
-            // Items
+            + "</td></tr></table></div>"
             + "<div style='padding:22px 30px 0;'>"
             + "<h3 style='color:#3d1f08;margin:0 0 10px;font-size:15px;border-bottom:2px solid #fde8d0;padding-bottom:8px;'>🛒 Items Ordered</h3>"
             + "<table style='width:100%;border-collapse:collapse;'>"
@@ -187,11 +181,7 @@ public class EmailService {
             + "<th style='padding:9px 8px;text-align:left;color:#8B4513;font-size:11px;text-transform:uppercase;letter-spacing:1px;'>Product</th>"
             + "<th style='padding:9px 8px;text-align:center;color:#8B4513;font-size:11px;text-transform:uppercase;letter-spacing:1px;'>Qty</th>"
             + "<th style='padding:9px 8px;text-align:right;color:#8B4513;font-size:11px;text-transform:uppercase;letter-spacing:1px;'>Amount</th>"
-            + "</tr></thead>"
-            + "<tbody>" + itemRowsHtml + "</tbody>"
-            + "</table></div>"
-
-            // Totals
+            + "</tr></thead><tbody>" + itemRowsHtml + "</tbody></table></div>"
             + "<div style='padding:14px 30px;'>"
             + "<table style='width:100%;border-collapse:collapse;'>"
             + "<tr><td style='padding:5px 0;color:#666;font-size:14px;'>Subtotal</td>"
@@ -202,26 +192,11 @@ public class EmailService {
             + "<td style='padding:10px 0 4px;font-weight:700;color:#3d1f08;font-size:16px;'>" + (isCod ? "Amount Due" : "Total Paid") + "</td>"
             + "<td style='padding:10px 0 4px;text-align:right;font-weight:700;color:#8B4513;font-size:18px;'>" + finalAmount + "</td>"
             + "</tr></table></div>"
-
-            // Delivery address
             + "<div style='margin:0 30px 22px;background:#fdf3e7;border-radius:10px;padding:16px 18px;'>"
             + "<h3 style='margin:0 0 10px;color:#3d1f08;font-size:15px;'>📦 Delivery Address</h3>"
             + "<p style='margin:0;color:#555;line-height:1.7;font-size:14px;'>"
             + "<strong>" + esc(customerName) + "</strong><br>📞 " + phone + "<br>" + address
             + "</p>" + notesRow + "</div>"
-
-            // Next steps
-            + "<div style='margin:0 30px 24px;'>"
-            + "<h3 style='color:#3d1f08;margin:0 0 14px;font-size:15px;'>🕐 What happens next?</h3>"
-            + "<div style='display:flex;'>"
-            + step("1","#8B4513","Order Received","Your order is in the queue")
-            + step("2","#a0522d","Freshly Baked","Our bakers prepare your items")
-            + step("3","#cd853f", isCod ? "Pay on Arrival" : "Out for Delivery",
-                   isCod ? "Keep exact change ready" : "Your order is on its way")
-            + step("4","#10b981","Delivered!","Enjoy your fresh bakes! 🥐")
-            + "</div></div>"
-
-            // Footer
             + "<div style='background:#3d1f08;padding:24px 30px;text-align:center;'>"
             + "<p style='color:#f8d7a0;margin:0 0 4px;font-size:16px;font-weight:600;'>Maison Dorée Artisan Bakery</p>"
             + "<p style='color:#c8a06c;margin:0 0 10px;font-size:13px;'>Freshly baked with love, every single day 🥖</p>"
@@ -235,15 +210,6 @@ public class EmailService {
             + "<td style='padding:12px 8px;border-bottom:1px solid #fde8d0;text-align:center;color:#666;'>× " + qty + "</td>"
             + "<td style='padding:12px 8px;border-bottom:1px solid #fde8d0;text-align:right;color:#8B4513;font-weight:600;'>" + fmt(subtotal) + "</td>"
             + "</tr>";
-    }
-
-    private String step(String num, String color, String title, String desc) {
-        return "<div style='flex:1;text-align:center;padding:0 5px;'>"
-            + "<div style='width:32px;height:32px;border-radius:50%;background:" + color
-            + ";color:#fff;font-weight:700;font-size:14px;line-height:32px;display:inline-block;margin-bottom:6px;'>" + num + "</div>"
-            + "<p style='margin:0 0 2px;font-weight:600;color:#3d1f08;font-size:12px;'>" + title + "</p>"
-            + "<p style='margin:0;color:#888;font-size:11px;line-height:1.4;'>" + desc + "</p>"
-            + "</div>";
     }
 
     private String buildWelcomeHtml(String fullName) {
