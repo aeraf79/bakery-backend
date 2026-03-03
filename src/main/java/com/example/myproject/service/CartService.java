@@ -31,6 +31,7 @@ public class CartService {
     private ProductRepository productRepository;
 
     // ─── Helper: get or create cart for user ───────────────────────────────
+    // NOTE: must be called from within a @Transactional method
     private CartEntity getOrCreateCart(String email) {
         UserEntity user = userRepository.findByEmail(email)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found: " + email));
@@ -93,12 +94,14 @@ public class CartService {
     }
 
     // ─── GET CART ───────────────────────────────────────────────────────────
+    @Transactional  // ← FIX: keeps session open so cart.getItems() works
     public CartDTO getCart(String email) {
         CartEntity cart = getOrCreateCart(email);
         return toDTO(cart);
     }
 
     // ─── GET CART ITEM COUNT ────────────────────────────────────────────────
+    @Transactional  // ← FIX: keeps session open
     public Map<String, Integer> getCartCount(String email) {
         CartEntity cart = getOrCreateCart(email);
         return Map.of("count", cart.getTotalItems());
@@ -122,7 +125,6 @@ public class CartService {
                     product.getStockQuantity() + " items available.");
         }
 
-        // Check if product already in cart — if so, increase quantity
         CartItemEntity existingItem = cartItemRepository
                 .findByCartAndProduct(cart, product)
                 .orElse(null);
@@ -163,7 +165,6 @@ public class CartService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Cart item not found with id: " + cartItemId));
 
-        // Security: ensure this item belongs to this user's cart
         if (!item.getCart().getCartId().equals(cart.getCartId())) {
             throw new RuntimeException("Cart item does not belong to your cart.");
         }
@@ -218,8 +219,11 @@ public class CartService {
     }
 
     // ─── GET CART ITEMS (for order creation) ───────────────────────────────
+    @Transactional  // ← FIX: keeps session open for callers (OrderService)
     public List<CartItemEntity> getCartItems(String email) {
         CartEntity cart = getOrCreateCart(email);
+        // Force-initialize the items list while session is still open
+        cart.getItems().size();
         return cart.getItems();
     }
 }
