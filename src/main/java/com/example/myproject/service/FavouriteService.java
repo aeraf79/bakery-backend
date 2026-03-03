@@ -52,6 +52,7 @@ public class FavouriteService {
     }
 
     // ─── GET ALL FAVOURITES ────────────────────────────────────────────────
+    @Transactional  // ← FIX: keeps session open so fav.getProduct() works
     public List<FavouriteDTO> getFavourites(String email) {
         UserEntity user = getUser(email);
         return favouriteRepository.findByUser(user)
@@ -90,6 +91,7 @@ public class FavouriteService {
     }
 
     // ─── CHECK IF A PRODUCT IS FAVOURITED ─────────────────────────────────
+    @Transactional
     public boolean isFavourited(String email, Long productId) {
         UserEntity user = getUser(email);
         ProductEntity product = productRepository.findById(productId)
@@ -98,6 +100,7 @@ public class FavouriteService {
     }
 
     // ─── GET FAVOURITE COUNT ───────────────────────────────────────────────
+    @Transactional
     public Map<String, Long> getFavouriteCount(String email) {
         UserEntity user = getUser(email);
         return Map.of("count", favouriteRepository.countByUser(user));
@@ -126,6 +129,7 @@ public class FavouriteService {
     }
 
     // ─── GET ALL FAVOURITED PRODUCT IDs (for UI highlighting) ─────────────
+    @Transactional  // ← FIX: keeps session open so f.getProduct() works
     public List<Long> getFavouritedProductIds(String email) {
         UserEntity user = getUser(email);
         return favouriteRepository.findByUser(user)
