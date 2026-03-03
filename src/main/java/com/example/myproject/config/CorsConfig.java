@@ -16,18 +16,21 @@ public class CorsConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
 
-        // ✅ Allow React dev server
-        configuration.setAllowedOrigins(List.of(
+        // ✅ Allow localhost (dev) AND your deployed frontend (prod)
+        // IMPORTANT: Replace "https://your-frontend.up.railway.app" with your actual
+        // deployed frontend URL (e.g. Vercel, Netlify, Railway, etc.)
+        configuration.setAllowedOriginPatterns(List.of(
             "http://localhost:3000",
-            "http://localhost:5173"  // Vite users
+            "http://localhost:5173",
+            "https://*.up.railway.app",   // Railway deployments
+            "https://*.vercel.app",       // Vercel deployments
+            "https://*.netlify.app"       // Netlify deployments
         ));
 
-        // ✅ Allow all needed HTTP methods
         configuration.setAllowedMethods(Arrays.asList(
             "GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"
         ));
 
-        // ✅ Allow Authorization header (needed for JWT)
         configuration.setAllowedHeaders(Arrays.asList(
             "Authorization",
             "Content-Type",
@@ -36,13 +39,8 @@ public class CorsConfig {
             "X-Requested-With"
         ));
 
-        // ✅ Allow browser to read Authorization response header
         configuration.setExposedHeaders(List.of("Authorization"));
-
-        // ✅ Do NOT allow credentials with wildcard origin
         configuration.setAllowCredentials(false);
-
-        // ✅ Cache preflight for 1 hour (reduces OPTIONS calls)
         configuration.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
