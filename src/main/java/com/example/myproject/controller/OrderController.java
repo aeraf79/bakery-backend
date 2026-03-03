@@ -8,6 +8,7 @@ import com.example.myproject.repository.UserRepository;
 import com.example.myproject.service.OrderService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.security.Principal;
@@ -28,14 +29,8 @@ public class OrderController {
         this.userRepository = userRepository;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // COD ENDPOINTS  ← these were completely missing, which broke COD checkout
-    // ─────────────────────────────────────────────────────────────────────────
+    // ─── COD ENDPOINTS ────────────────────────────────────────────────────────
 
-    /**
-     * Place a COD order from cart
-     * POST /api/orders/cod
-     */
     @PostMapping("/cod")
     public ResponseEntity<?> placeCodOrder(
         @Valid @RequestBody CreateOrderRequest request,
@@ -60,10 +55,6 @@ public class OrderController {
         }
     }
 
-    /**
-     * Place a COD order via Buy Now (single product, bypasses cart)
-     * POST /api/orders/cod/buy-now?productId=X&quantity=Y
-     */
     @PostMapping("/cod/buy-now")
     public ResponseEntity<?> placeCodBuyNow(
         @RequestParam Long productId,
@@ -90,15 +81,18 @@ public class OrderController {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // EXISTING ENDPOINTS (with admin fix applied)
-    // ─────────────────────────────────────────────────────────────────────────
+    // ─── GET ORDERS ───────────────────────────────────────────────────────────
 
     /**
-     * Get orders — ALL orders for ADMIN, own orders for USER
      * GET /api/orders
+     * Returns ALL orders for ADMIN, own orders for USER.
+     *
+     * @Transactional(readOnly=true) keeps the Hibernate session open so that
+     * OrderDTO.fromEntity() can access lazy relations (user, orderItems) without
+     * throwing LazyInitializationException.
      */
     @GetMapping
+    @Transactional(readOnly = true)   // ← KEY FIX
     public ResponseEntity<?> getOrders(Principal principal) {
         try {
             String userEmail = principal.getName();
@@ -113,7 +107,7 @@ public class OrderController {
             }
 
             List<OrderDTO> orderDTOs = orders.stream()
-                    .map(OrderDTO::fromEntity)
+                    .map(OrderDTO::fromEntity)   // accesses lazy user + orderItems
                     .collect(Collectors.toList());
 
             return ResponseEntity.ok(orderDTOs);
@@ -128,6 +122,7 @@ public class OrderController {
      * GET /api/orders/{orderId}
      */
     @GetMapping("/{orderId}")
+    @Transactional(readOnly = true)   // ← KEY FIX
     public ResponseEntity<?> getOrderById(
         @PathVariable Long orderId,
         Principal principal
@@ -156,6 +151,7 @@ public class OrderController {
      * GET /api/orders/number/{orderNumber}
      */
     @GetMapping("/number/{orderNumber}")
+    @Transactional(readOnly = true)   // ← KEY FIX
     public ResponseEntity<?> getOrderByNumber(
         @PathVariable String orderNumber,
         Principal principal
@@ -203,8 +199,7 @@ public class OrderController {
     }
 
     /**
-     * Admin: update order status
-     * PUT /api/orders/{orderId}/status
+     * PUT /api/orders/{orderId}/status  (Admin only)
      */
     @PutMapping("/{orderId}/status")
     public ResponseEntity<?> updateOrderStatus(
