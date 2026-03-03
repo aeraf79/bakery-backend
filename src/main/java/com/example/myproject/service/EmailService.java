@@ -13,6 +13,8 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
 
 @Service
 public class EmailService {
@@ -24,7 +26,7 @@ public class EmailService {
     private String fromEmail;
 
     // ─────────────────────────────────────────────────────────────────────────
-    // WELCOME EMAIL
+    // WELCOME EMAIL — only takes Strings, always safe to be @Async
     // ─────────────────────────────────────────────────────────────────────────
     @Async
     public void sendWelcomeEmail(String toEmail, String fullName) {
@@ -37,43 +39,29 @@ public class EmailService {
             helper.setText(buildWelcomeHtml(fullName), true);
             mailSender.send(message);
         } catch (Exception e) {
-            // Swallow — email failure must never break registration
             System.err.println("Failed to send welcome email: " + e.getMessage());
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // ORDER CONFIRMATION
+    // ORDER CONFIRMATION — called from inside @Transactional in OrderService
+    // and RazorpayService, so the Hibernate session IS open here.
     //
-    // KEY FIX: This method is now @Async itself.
-    // It extracts all data from the entity on a background thread BUT we pass
-    // in the already-extracted primitive values to avoid LazyInitializationException.
+    // KEY FIX: This method is NOT @Async.
+    // It extracts all lazy-loaded data synchronously while the session is open,
+    // then passes only plain Strings/primitives to the @Async sender below.
     //
-    // Called from OrderService / RazorpayService while the Hibernate session is
-    // still open, so accessing relations here is safe.
+    // Previous bug: method was @Async itself, so it ran on a new thread AFTER
+    // the transaction closed — order.getUser() and order.getOrderItems() threw
+    // LazyInitializationException because the session was already gone.
     // ─────────────────────────────────────────────────────────────────────────
-    @Async
     public void sendOrderConfirmationEmail(OrderEntity order) {
-        // Extract everything from the entity — called while the session is still
-        // open on the caller's thread via @Async proxy (Spring schedules this on
-        // a separate thread pool thread, but Spring Data JPA keeps session open
-        // long enough for the extract to happen before the TX closes).
-        //
-        // If LazyInit issues ever surface, move extraction to the caller first,
-        // then call sendOrderEmailAsync() directly (see pattern below).
         try {
-            String toEmail      = order.getUser().getEmail();
+            // ── Extract lazy fields while session is open ───────────────────
+            String toEmail      = order.getUser().getEmail();       // LAZY — must read here
             String customerName = order.getShippingName();
             String orderNumber  = order.getOrderNumber();
             boolean isCod       = order.getPaymentMethod() == OrderEntity.PaymentMethod.COD;
-
-            StringBuilder itemRows = new StringBuilder();
-            if (order.getOrderItems() != null) {
-                for (OrderItemEntity item : order.getOrderItems()) {
-                    itemRows.append(buildItemRow(
-                        item.getProductName(), item.getQuantity(), item.getSubtotal()));
-                }
-            }
 
             String orderDate = order.getCreatedAt() != null
                 ? order.getCreatedAt().format(DateTimeFormatter.ofPattern("dd MMM yyyy, hh:mm a"))
@@ -92,23 +80,44 @@ public class EmailService {
             String notes = order.getOrderNotes() != null && !order.getOrderNotes().isBlank()
                 ? "📝 " + esc(order.getOrderNotes()) : "";
 
-            // Now send with only plain Strings
-            doSend(toEmail, customerName, orderNumber, orderDate,
-                isCod, itemRows.toString(), totalAmount, shippingFee,
-                finalAmount, address, phone, notes);
+            // Extract order items into plain POJOs — LAZY collection, read now
+            List<EmailOrderItem> items = new ArrayList<>();
+            if (order.getOrderItems() != null) {
+                for (OrderItemEntity item : order.getOrderItems()) {
+                    items.add(new EmailOrderItem(
+                        item.getProductName(),
+                        item.getQuantity(),
+                        item.getSubtotal()
+                    ));
+                }
+            }
+
+            // ── Hand off to @Async sender — only plain data, no entity refs ─
+            sendOrderEmailAsync(toEmail, customerName, orderNumber, orderDate,
+                isCod, items, totalAmount, shippingFee, finalAmount, address, phone, notes);
 
         } catch (Exception e) {
+            // Never break checkout due to email issues
             System.err.println("Failed to prepare order confirmation email: " + e.getMessage());
         }
     }
 
-    // Internal helper — does the actual SMTP send with plain data only
-    private void doSend(
+    // ─────────────────────────────────────────────────────────────────────────
+    // ASYNC SMTP SENDER — receives only plain values, safe on any thread
+    // ─────────────────────────────────────────────────────────────────────────
+    @Async
+    public void sendOrderEmailAsync(
         String toEmail, String customerName, String orderNumber, String orderDate,
-        boolean isCod, String itemRowsHtml, String totalAmount, String shippingFee,
-        String finalAmount, String address, String phone, String notes
+        boolean isCod, List<EmailOrderItem> items,
+        String totalAmount, String shippingFee, String finalAmount,
+        String address, String phone, String notes
     ) {
         try {
+            StringBuilder itemRowsHtml = new StringBuilder();
+            for (EmailOrderItem item : items) {
+                itemRowsHtml.append(buildItemRow(item.productName, item.quantity, item.subtotal));
+            }
+
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
             helper.setFrom(fromEmail);
@@ -117,11 +126,29 @@ public class EmailService {
                 ? "Order Confirmed! 🎊 #" + orderNumber + " – Pay on Delivery"
                 : "Payment Successful! ✅ Order #" + orderNumber + " Confirmed");
             helper.setText(buildOrderHtml(customerName, orderNumber, orderDate, isCod,
-                itemRowsHtml, totalAmount, shippingFee, finalAmount, address, phone, notes), true);
+                itemRowsHtml.toString(), totalAmount, shippingFee, finalAmount,
+                address, phone, notes), true);
             mailSender.send(message);
             System.out.println("✅ Order confirmation email sent → " + toEmail);
         } catch (MessagingException e) {
             System.err.println("❌ Failed to send order confirmation email: " + e.getMessage());
+        } catch (Exception e) {
+            System.err.println("❌ Unexpected error sending email: " + e.getMessage());
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SIMPLE VALUE OBJECT — carries item data safely across the thread boundary
+    // ─────────────────────────────────────────────────────────────────────────
+    public static class EmailOrderItem {
+        final String productName;
+        final int quantity;
+        final BigDecimal subtotal;
+
+        EmailOrderItem(String productName, int quantity, BigDecimal subtotal) {
+            this.productName = productName;
+            this.quantity    = quantity;
+            this.subtotal    = subtotal;
         }
     }
 
