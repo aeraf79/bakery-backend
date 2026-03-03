@@ -38,7 +38,7 @@ public class OrderService {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // SHARED HELPER — builds the base OrderEntity from shipping fields
+    // SHARED HELPERS
     // ─────────────────────────────────────────────────────────────────────────
     private void applyShipping(OrderEntity order, CreateOrderRequest request) {
         order.setShippingName(request.getName());
@@ -57,7 +57,7 @@ public class OrderService {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // RAZORPAY — create order from cart (existing, unchanged)
+    // RAZORPAY — create order from cart
     // ─────────────────────────────────────────────────────────────────────────
     @Transactional
     public OrderEntity createOrderFromCart(String userEmail, CreateOrderRequest request) {
@@ -104,7 +104,7 @@ public class OrderService {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // RAZORPAY — create order from Buy Now (existing, unchanged)
+    // RAZORPAY — create order from Buy Now
     // ─────────────────────────────────────────────────────────────────────────
     @Transactional
     public OrderEntity createOrderFromBuyNow(String userEmail, Long productId, int quantity, CreateOrderRequest request) {
@@ -141,14 +141,14 @@ public class OrderService {
         oi.setSubtotal(totalAmount);
         oi.setProductImageUrl(product.getImageUrl());
 
-        List<OrderItemEntity> buyNowItems1 = new ArrayList<>();
-        buyNowItems1.add(oi);
-        order.setOrderItems(buyNowItems1);
+        List<OrderItemEntity> items = new ArrayList<>();
+        items.add(oi);
+        order.setOrderItems(items);
         return orderRepository.save(order);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // COD — create order from cart  ← NEW
+    // COD — create order from cart
     // ─────────────────────────────────────────────────────────────────────────
     @Transactional
     public OrderEntity createCodOrderFromCart(String userEmail, CreateOrderRequest request) {
@@ -169,8 +169,8 @@ public class OrderService {
         order.setTotalAmount(totalAmount);
         order.setShippingFee(shippingFee);
         order.setFinalAmount(totalAmount.add(shippingFee));
-        order.setStatus(OrderEntity.OrderStatus.CONFIRMED);      // COD orders go straight to CONFIRMED
-        order.setPaymentStatus(OrderEntity.PaymentStatus.PENDING); // paid on delivery
+        order.setStatus(OrderEntity.OrderStatus.CONFIRMED);
+        order.setPaymentStatus(OrderEntity.PaymentStatus.PENDING);
         order.setPaymentMethod(OrderEntity.PaymentMethod.COD);
         applyShipping(order, request);
 
@@ -195,7 +195,7 @@ public class OrderService {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // COD — create order from Buy Now  ← NEW
+    // COD — create order from Buy Now
     // ─────────────────────────────────────────────────────────────────────────
     @Transactional
     public OrderEntity createCodOrderFromBuyNow(String userEmail, Long productId, int quantity, CreateOrderRequest request) {
@@ -218,8 +218,8 @@ public class OrderService {
         order.setTotalAmount(totalAmount);
         order.setShippingFee(shippingFee);
         order.setFinalAmount(totalAmount.add(shippingFee));
-        order.setStatus(OrderEntity.OrderStatus.CONFIRMED);       // COD = confirmed immediately
-        order.setPaymentStatus(OrderEntity.PaymentStatus.PENDING); // paid on delivery
+        order.setStatus(OrderEntity.OrderStatus.CONFIRMED);
+        order.setPaymentStatus(OrderEntity.PaymentStatus.PENDING);
         order.setPaymentMethod(OrderEntity.PaymentMethod.COD);
         applyShipping(order, request);
 
@@ -232,24 +232,26 @@ public class OrderService {
         oi.setSubtotal(totalAmount);
         oi.setProductImageUrl(product.getImageUrl());
 
-        List<OrderItemEntity> buyNowItems2 = new ArrayList<>();
-        buyNowItems2.add(oi);
-        order.setOrderItems(buyNowItems2);
-        OrderEntity savedBuyNow = orderRepository.save(order);
-        emailService.sendOrderConfirmationEmail(savedBuyNow);
-        return savedBuyNow;
+        List<OrderItemEntity> items = new ArrayList<>();
+        items.add(oi);
+        order.setOrderItems(items);
+        OrderEntity saved = orderRepository.save(order);
+        emailService.sendOrderConfirmationEmail(saved);
+        return saved;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // QUERY METHODS
+    // QUERY METHODS — all need @Transactional so lazy relations load
     // ─────────────────────────────────────────────────────────────────────────
 
     /** All orders — admin only */
+    @Transactional(readOnly = true)  // ← FIX: keeps session open for OrderDTO.fromEntity()
     public List<OrderEntity> getAllOrders() {
         return orderRepository.findAllByOrderByCreatedAtDesc();
     }
 
     /** A specific user's orders */
+    @Transactional(readOnly = true)  // ← FIX: keeps session open for OrderDTO.fromEntity()
     public List<OrderEntity> getUserOrders(String userEmail) {
         UserEntity user = userRepository.findByEmail(userEmail)
             .orElseThrow(() -> new RuntimeException("User not found"));
@@ -257,6 +259,7 @@ public class OrderService {
     }
 
     /** Single order with ownership check (for regular users) */
+    @Transactional(readOnly = true)  // ← FIX
     public OrderEntity getOrderById(String userEmail, Long orderId) {
         UserEntity user = userRepository.findByEmail(userEmail)
             .orElseThrow(() -> new RuntimeException("User not found"));
@@ -268,12 +271,14 @@ public class OrderService {
     }
 
     /** Single order without ownership check (admin only) */
+    @Transactional(readOnly = true)  // ← FIX
     public OrderEntity getOrderByIdAdmin(Long orderId) {
         return orderRepository.findById(orderId)
             .orElseThrow(() -> new RuntimeException("Order not found"));
     }
 
     /** Find by order number */
+    @Transactional(readOnly = true)  // ← FIX
     public OrderEntity getOrderByOrderNumber(String orderNumber) {
         return orderRepository.findByOrderNumber(orderNumber)
             .orElseThrow(() -> new RuntimeException("Order not found"));
