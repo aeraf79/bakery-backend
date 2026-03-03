@@ -2,11 +2,12 @@ package com.example.myproject.service;
 
 import com.example.myproject.entity.OrderEntity;
 import com.example.myproject.entity.OrderItemEntity;
-import com.resend.Resend;
-import com.resend.core.exception.ResendException;
-import com.resend.services.emails.model.CreateEmailOptions;
-import com.resend.services.emails.model.CreateEmailResponse;
+import jakarta.mail.MessagingException;
+import jakarta.mail.internet.MimeMessage;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -18,10 +19,10 @@ import java.util.List;
 @Service
 public class EmailService {
 
-    @Value("${resend.api.key}")
-    private String resendApiKey;
+    @Autowired
+    private JavaMailSender mailSender;
 
-    @Value("${resend.from.email}")
+    @Value("${spring.mail.username}")
     private String fromEmail;
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -30,14 +31,13 @@ public class EmailService {
     @Async
     public void sendWelcomeEmail(String toEmail, String fullName) {
         try {
-            Resend resend = new Resend(resendApiKey);
-            CreateEmailOptions params = CreateEmailOptions.builder()
-                .from(fromEmail)
-                .to(toEmail)
-                .subject("Welcome to Maison Dorée Bakery! 🎉")
-                .html(buildWelcomeHtml(fullName))
-                .build();
-            resend.emails().send(params);
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            helper.setFrom(fromEmail);
+            helper.setTo(toEmail);
+            helper.setSubject("Welcome to Maison Dorée Bakery! 🎉");
+            helper.setText(buildWelcomeHtml(fullName), true);
+            mailSender.send(message);
             System.out.println("✅ Welcome email sent → " + toEmail);
         } catch (Exception e) {
             System.err.println("Failed to send welcome email: " + e.getMessage());
@@ -91,8 +91,8 @@ public class EmailService {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // ASYNC SENDER — uses Resend HTTP API (HTTPS port 443, not SMTP port 587)
-    // Works on Railway free tier with zero port issues.
+    // ASYNC SENDER — receives only plain values, safe on any thread
+    // Uses Brevo SMTP (smtp-relay.brevo.com:587) — works on Railway free tier
     // ─────────────────────────────────────────────────────────────────────────
     @Async
     public void sendOrderEmailAsync(
@@ -107,25 +107,22 @@ public class EmailService {
                 itemRowsHtml.append(buildItemRow(item.productName, item.quantity, item.subtotal));
             }
 
-            String subject = isCod
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            helper.setFrom(fromEmail);
+            helper.setTo(toEmail);
+            helper.setSubject(isCod
                 ? "Order Confirmed! 🎊 #" + orderNumber + " – Pay on Delivery"
-                : "Payment Successful! ✅ Order #" + orderNumber + " Confirmed";
+                : "Payment Successful! ✅ Order #" + orderNumber + " Confirmed");
+            helper.setText(buildOrderHtml(customerName, orderNumber, orderDate, isCod,
+                itemRowsHtml.toString(), totalAmount, shippingFee, finalAmount,
+                address, phone, notes), true);
 
-            Resend resend = new Resend(resendApiKey);
-            CreateEmailOptions params = CreateEmailOptions.builder()
-                .from(fromEmail)
-                .to(toEmail)
-                .subject(subject)
-                .html(buildOrderHtml(customerName, orderNumber, orderDate, isCod,
-                    itemRowsHtml.toString(), totalAmount, shippingFee, finalAmount,
-                    address, phone, notes))
-                .build();
+            mailSender.send(message);
+            System.out.println("✅ Order confirmation email sent → " + toEmail);
 
-            CreateEmailResponse response = resend.emails().send(params);
-            System.out.println("✅ Order email sent → " + toEmail + " id:" + response.getId());
-
-        } catch (ResendException e) {
-            System.err.println("❌ Resend API error: " + e.getMessage());
+        } catch (MessagingException e) {
+            System.err.println("❌ Failed to send order confirmation email: " + e.getMessage());
         } catch (Exception e) {
             System.err.println("❌ Unexpected error sending email: " + e.getMessage());
         }
